@@ -59,7 +59,8 @@ function progressText(book: Book): string {
     </div>
     <!-- Cover -->
     <div class="book-cover" :style="displayCover ? {} : { background: book.coverColor || '#4a7fa5' }">
-      <img v-if="displayCover" :src="displayCover" :alt="book.title" class="cover-img" @error="onImgError" />
+      <img v-if="displayCover" :src="displayCover" :alt="book.title" class="cover-img" draggable="false"
+        @error="onImgError" />
       <template v-else>
         <span class="cover-format">{{ book.format.toUpperCase() }}</span>
         <span class="cover-title">{{ book.title }}</span>

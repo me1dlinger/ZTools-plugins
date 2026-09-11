@@ -66,6 +66,11 @@ let isAutoPageTickRunning = false
 let hushreaderWindow: AppBrowserWindow | null = null
 let hushreaderWindowAnchor: { x: number; y: number } | null = null
 let offHushreaderCommand: (() => void) | undefined
+// 右键菜单撑高临时状态：菜单打开期间窗口临时撑高（不写进配置），关闭后还原。
+// snapshot 记录撑高前的窗口 bounds 与配置，用于还原时区分「未拖动 → 精确还原」与
+// 「撑高期间拖动/缩放过 → 按新配置还原」。
+let hushreaderMenuExpandedHeight: number | null = null
+let hushreaderMenuExpandSnapshot: { bounds: HushreaderBounds; width: number; height: number; x: number; y: number } | null = null
 
 const cfg = computed(() => configStore.config)
 const hushreaderCfg = computed(() => cfg.value.hushreader)
@@ -178,8 +183,23 @@ function getMovedHushreaderWindowBounds(x: number, y: number) {
   }
 }
 
+// 若右键菜单正处于撑高状态，将给定 bounds 叠加临时高度（底边不动、向上增长），
+// 保证菜单打开期间的状态推送 / 缩放预览不会把窗口缩回菜单放不下的高度。
+function applyHushreaderMenuExpansion(bounds: HushreaderBounds): HushreaderBounds {
+  const target = hushreaderMenuExpandedHeight
+  if (!target || !hushreaderWindow || hushreaderWindow.isDestroyed?.()) return bounds
+  if (target <= bounds.height) return bounds
+  const limits = getHushreaderSizeLimits()
+  const height = Math.min(target, limits.maxHeight)
+  if (height <= bounds.height) return bounds
+  const grow = height - bounds.height
+  const area = getWorkArea()
+  const maxY = area.y + Math.max(0, area.height - height)
+  return { ...bounds, height, y: clampNumber(bounds.y - grow, area.y, maxY) }
+}
+
 function getHushreaderWindowBounds() {
-  return getAnchoredHushreaderWindowBoundsForSize(hushreaderCfg.value.hushreaderWidth, hushreaderCfg.value.hushreaderHeight)
+  return applyHushreaderMenuExpansion(getAnchoredHushreaderWindowBoundsForSize(hushreaderCfg.value.hushreaderWidth, hushreaderCfg.value.hushreaderHeight))
 }
 
 function getHushreaderLineLength(): number {
@@ -445,6 +465,8 @@ function getReadingTimerRemaining(): number | null {
 function closePlugin() {
   isReaderHidden.value = true
   hushreaderActivated.value = false
+  hushreaderMenuExpandedHeight = null
+  hushreaderMenuExpandSnapshot = null
   stopReadingTimer()
   try { (window as any).ztools?.outPlugin?.() } catch { }
 }
@@ -601,21 +623,63 @@ function resizeHushreaderWindow(width: number, height: number) {
 
 function moveHushreaderWindow(x: number, y: number) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return
-  const bounds = getMovedHushreaderWindowBounds(x, y)
-  hushreaderCfg.value.hushreaderX = bounds.x
-  hushreaderCfg.value.hushreaderY = bounds.y
-  applyHushreaderWindowBounds(bounds)
+  // 配置始终存小尺寸下的坐标（撑高是临时叠加，不入配置），保证还原后底边位置一致
+  const base = getMovedHushreaderWindowBounds(x, y)
+  hushreaderCfg.value.hushreaderX = base.x
+  hushreaderCfg.value.hushreaderY = base.y
+  applyHushreaderWindowBounds(applyHushreaderMenuExpansion(base))
   configStore.save()
 }
 
 function previewHushreaderWindowSize(width: number, height: number) {
   if (!hushreaderWindow || hushreaderWindow.isDestroyed?.() || !Number.isFinite(width) || !Number.isFinite(height)) return
-  applyHushreaderWindowBounds(getAnchoredHushreaderWindowBoundsForSize(width, height), true)
+  applyHushreaderWindowBounds(applyHushreaderMenuExpansion(getAnchoredHushreaderWindowBoundsForSize(width, height)), true)
+}
+
+// 右键菜单撑高：菜单打开期间把窗口临时撑到能完整放下菜单的高度（底边不动、向上增长），
+// 不写入持久化配置，菜单关闭后由 context-menu-restore 还原。
+function expandHushreaderForContextMenu(requiredHeight: number) {
+  if (!hushreaderWindow || hushreaderWindow.isDestroyed?.() || !Number.isFinite(requiredHeight)) return
+  const limits = getHushreaderSizeLimits()
+  const current = getHushreaderWindowBounds()
+  const targetHeight = clampNumber(Math.max(current.height, requiredHeight), limits.minHeight, limits.maxHeight)
+  if (targetHeight <= current.height) return
+  hushreaderMenuExpandedHeight = targetHeight
+  hushreaderMenuExpandSnapshot = {
+    bounds: current,
+    width: hushreaderCfg.value.hushreaderWidth,
+    height: hushreaderCfg.value.hushreaderHeight,
+    x: hushreaderCfg.value.hushreaderX,
+    y: hushreaderCfg.value.hushreaderY
+  }
+  const grow = targetHeight - current.height
+  const area = getWorkArea()
+  const maxY = area.y + Math.max(0, area.height - targetHeight)
+  applyHushreaderWindowBounds({ ...current, height: targetHeight, y: clampNumber(current.y - grow, area.y, maxY) })
+}
+
+// 还原撑高：若撑高期间用户拖动/缩放改过配置，按配置 x/y 直接还原（不覆盖用户操作，
+// 也不走锚点——锚点已被撑高过程更新过，会带偏位置）；否则精确还原撑高前的窗口 bounds。
+function restoreHushreaderAfterContextMenu() {
+  const snapshot = hushreaderMenuExpandSnapshot
+  hushreaderMenuExpandSnapshot = null
+  hushreaderMenuExpandedHeight = null
+  if (!snapshot || !hushreaderWindow || hushreaderWindow.isDestroyed?.()) return
+  const cfgChanged =
+    snapshot.width !== hushreaderCfg.value.hushreaderWidth ||
+    snapshot.height !== hushreaderCfg.value.hushreaderHeight ||
+    snapshot.x !== hushreaderCfg.value.hushreaderX ||
+    snapshot.y !== hushreaderCfg.value.hushreaderY
+  if (cfgChanged) {
+    applyHushreaderWindowBounds(getMovedHushreaderWindowBounds(hushreaderCfg.value.hushreaderX, hushreaderCfg.value.hushreaderY))
+  } else {
+    applyHushreaderWindowBounds(snapshot.bounds)
+  }
 }
 
 function previewHushreaderWindowPosition(x: number, y: number) {
   if (!hushreaderWindow || hushreaderWindow.isDestroyed?.() || !Number.isFinite(x) || !Number.isFinite(y)) return
-  applyHushreaderWindowBounds(getMovedHushreaderWindowBounds(x, y), true)
+  applyHushreaderWindowBounds(applyHushreaderMenuExpansion(getMovedHushreaderWindowBounds(x, y)), true)
 }
 
 function handleHushreaderCommand(command: HushreaderCommand) {
@@ -631,6 +695,12 @@ function handleHushreaderCommand(command: HushreaderCommand) {
     }
     if (command?.type === 'move' && typeof command.x === 'number' && typeof command.y === 'number') {
       moveHushreaderWindow(command.x, command.y)
+    }
+    if (command?.type === 'context-menu-expand' && typeof command.height === 'number') {
+      expandHushreaderForContextMenu(command.height)
+    }
+    if (command?.type === 'context-menu-restore') {
+      restoreHushreaderAfterContextMenu()
     }
     if (command?.type === 'jump-percent' && typeof command.percent === 'number') {
       const percent = clampNumber(command.percent, 0, 100)
@@ -663,7 +733,7 @@ function handleHushreaderCommand(command: HushreaderCommand) {
   else if (command === 'close') closePlugin()
   else if (command === 'auto') toggleAutoPaging()
   else if (command === 'close-reader') { isReaderHidden.value = true; blurHushreaderKeyboard() }
-  else if (command === 'destroy') { saveReadingProgress(); hushreaderActivated.value = false; stopReadingTimer(); hushreaderWindow?.close?.(); hushreaderWindow = null }
+  else if (command === 'destroy') { saveReadingProgress(); hushreaderActivated.value = false; hushreaderMenuExpandedHeight = null; hushreaderMenuExpandSnapshot = null; stopReadingTimer(); hushreaderWindow?.close?.(); hushreaderWindow = null }
   else if (command === 'show-main') { (window as any).ztools?.showMainWindow?.() }
   else if (command === 'stop-auto') { isAutoPaging.value = false; hushreaderCfg.value.autoFlipEnabled = false }
   else if (command === 'start-auto') { if (currentBook.value) { isAutoPaging.value = true; hushreaderCfg.value.autoFlipEnabled = true } }
@@ -810,6 +880,8 @@ onMounted(async () => {
       if (action?.code === 'hushreader-close') {
         saveReadingProgress()
         hushreaderActivated.value = false
+        hushreaderMenuExpandedHeight = null
+        hushreaderMenuExpandSnapshot = null
         stopReadingTimer()
         hushreaderWindow?.close?.()
         hushreaderWindow = null
@@ -823,6 +895,8 @@ onMounted(async () => {
       if (processExit) {
         saveReadingProgress()
         hushreaderActivated.value = false
+        hushreaderMenuExpandedHeight = null
+        hushreaderMenuExpandSnapshot = null
         hushreaderWindow?.close?.()
       }
     })

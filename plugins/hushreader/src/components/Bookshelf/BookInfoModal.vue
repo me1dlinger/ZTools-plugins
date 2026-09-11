@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import type { Book } from '../../stores/books'
 import { useBookStore } from '../../stores/books'
 import { saveCustomCover } from '../../utils/db'
+import { optimizeCover } from '../../utils/cover'
 
 const props = defineProps<{ book: Book }>()
 const emit = defineEmits<{
@@ -80,8 +81,8 @@ function uploadCover() {
     const file = input.files?.[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = () => {
-      const data = reader.result as string
+    reader.onload = async () => {
+      const data = await optimizeCover(reader.result as string)
       emit('saved', { customCoverImage: data, updatedAt: Date.now() })
       saveCustomCover(props.book.id, data).catch(() => { })
     }
@@ -141,7 +142,7 @@ watch(() => props.book, () => {
           <div class="cover-section">
             <div v-if="!isEditing" class="cover-thumb"
               :style="displayCover ? {} : { background: book.coverColor || '#4a7fa5' }">
-              <img v-if="displayCover" :src="displayCover" :alt="book.title" class="cover-img"
+              <img v-if="displayCover" :src="displayCover" :alt="book.title" class="cover-img" draggable="false"
                 @error="imgError = true" />
               <template v-else>
                 <span class="cover-format">{{ book.format.toUpperCase() }}</span>
@@ -149,7 +150,7 @@ watch(() => props.book, () => {
               </template>
             </div>
             <div v-else class="cover-thumb editable" @click="uploadCover">
-              <img v-if="displayCover" :src="displayCover" :alt="book.title" class="cover-img"
+              <img v-if="displayCover" :src="displayCover" :alt="book.title" class="cover-img" draggable="false"
                 @error="imgError = true" />
               <template v-else>
                 <span class="cover-format">{{ book.format.toUpperCase() }}</span>

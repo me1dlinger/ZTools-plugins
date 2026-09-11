@@ -7,6 +7,7 @@ import { parseTxt } from '../../utils/txtParser'
 import { parseEpub } from '../../utils/epubParser'
 import { parseMobi } from '../../utils/mobiParser'
 import { saveCover, loadCover, removeCover, saveCustomCover, loadCustomCover, removeCustomCover, removeBookData, saveChapters, removeChapters } from '../../utils/db'
+import { optimizeCover } from '../../utils/cover'
 import SettingsModal from '../Settings/index.vue'
 import ContextMenu from './ContextMenu.vue'
 import BookCard from './BookCard.vue'
@@ -196,13 +197,15 @@ function confirmPath() {
   toast('路径已更新', 'success')
 }
 
-function openFileLocation(bookId: string) {
+async function openFileLocation(bookId: string) {
   closeContextMenu()
   const book = bookStore.books.find(b => b.id === bookId)
   if (!book) return
   try {
-    const result = (window as any).ztools?.shellShowItemInFolder?.(book.filePath)
-    if (!result) toast('无法打开文件位置', 'error')
+    // shellShowItemInFolder 是异步 IPC，成功时会打开资源管理器定位文件，
+    // 但其返回值并不可靠（成功时也可能为 undefined/false），不能拿它判断成败。
+    // 仅当调用本身抛异常（如 ztools 不可用、路径非法）时才提示失败。
+    await (window as any).ztools?.shellShowItemInFolder?.(book.filePath)
   } catch {
     toast('无法打开文件位置', 'error')
   }
@@ -282,8 +285,8 @@ function openCoverPicker(bookId: string) {
     const file = input.files?.[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = () => {
-      const data = reader.result as string
+    reader.onload = async () => {
+      const data = await optimizeCover(reader.result as string)
       bookStore.updateBook(bookId, { customCoverImage: data, updatedAt: Date.now() })
       saveCustomCover(bookId, data).catch(() => { })
       toast('封面已更新', 'success')
@@ -311,8 +314,9 @@ async function repairCover(bookId: string) {
     const file = new File([blob], book.filePath.split(/[\\/]/).pop() ?? 'book.epub')
     const result = await parseEpub(file)
     if (result.coverUrl) {
-      bookStore.updateBook(bookId, { coverImage: result.coverUrl })
-      saveCover(bookId, result.coverUrl).catch(() => { })
+      const cover = await optimizeCover(result.coverUrl)
+      bookStore.updateBook(bookId, { coverImage: cover })
+      saveCover(bookId, cover).catch(() => { })
     } else {
       bookStore.updateBook(bookId, { coverImage: undefined })
       removeCover(bookId).catch(() => { })
@@ -358,12 +362,12 @@ async function restoreCover(bookId: string) {
       const blob = new Blob([content], { type: 'application/epub+zip' })
       const file = new File([blob], book.filePath.split(/[\\/]/).pop() ?? 'book.epub')
       const result = await parseEpub(file)
-      coverImage = result.coverUrl || undefined
+      coverImage = result.coverUrl ? await optimizeCover(result.coverUrl) : undefined
     } else if (book.format === 'mobi') {
       const blob = new Blob([content], { type: 'application/x-mobipocket-ebook' })
       const file = new File([blob], book.filePath.split(/[\\/]/).pop() ?? 'book.mobi')
       const result = await parseMobi(file)
-      if (!result.error) coverImage = result.coverUrl || undefined
+      if (!result.error) coverImage = result.coverUrl ? await optimizeCover(result.coverUrl) : undefined
     }
 
     if (coverImage) {
@@ -450,7 +454,7 @@ async function reloadMetadata(bookId: string, silent = false) {
       author = result.author || author
       description = result.description || description
       totalChapters = result.chapters?.length
-      if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = result.coverUrl
+      if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = await optimizeCover(result.coverUrl)
       if (result.chapters?.length) saveChapters(bookId, result.chapters).catch(() => { })
     } else if (book.format === 'mobi') {
       const content = window.services?.readFileBinary?.(book.filePath)
@@ -465,7 +469,7 @@ async function reloadMetadata(bookId: string, silent = false) {
       author = result.author || author
       description = result.description || description
       totalChapters = result.chapters?.length
-      if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = result.coverUrl
+      if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = await optimizeCover(result.coverUrl)
       if (result.chapters?.length) saveChapters(bookId, result.chapters).catch(() => { })
     } else {
       const text = window.services?.readFile(book.filePath)
@@ -862,7 +866,7 @@ async function importBook(filePath: string) {
           title = result.title || title
           author = result.author || ''
           description = result.description || ''
-          if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = result.coverUrl
+          if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = await optimizeCover(result.coverUrl)
         }
       } catch { }
     }
@@ -878,7 +882,7 @@ async function importBook(filePath: string) {
           title = result.title || title
           author = result.author || ''
           description = result.description || ''
-          if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = result.coverUrl
+          if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = await optimizeCover(result.coverUrl)
         }
       } catch (e: any) {
         toast(`MOBI导入失败：${e.message}`, 'error'); return
@@ -933,7 +937,7 @@ async function importDroppedFile(file: File) {
         title = result.title || title
         author = result.author || ''
         description = result.description || ''
-        if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = result.coverUrl
+        if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = await optimizeCover(result.coverUrl)
       } catch { }
     }
 
@@ -944,7 +948,7 @@ async function importDroppedFile(file: File) {
         title = result.title || title
         author = result.author || ''
         description = result.description || ''
-        if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = result.coverUrl
+        if (result.coverUrl && !configStore.config.other.plainTextCover) coverImage = await optimizeCover(result.coverUrl)
       } catch (e: any) {
         toast(`MOBI导入失败：${e.message}`, 'error'); return
       }
@@ -1000,7 +1004,11 @@ const showDropConfirmModal = ref(false)
 const pendingDropFiles = ref<File[]>([])
 
 function hasFilePayload(ev: DragEvent) {
-  return Array.from(ev.dataTransfer?.types ?? []).includes('Files')
+  const types = Array.from(ev.dataTransfer?.types ?? [])
+  if (!types.includes('Files')) return false
+  // 元素拖拽（如封面 <img>）会在 dataTransfer 里额外带上 text/uri-list、text/html，
+  // 真正的 OS 文件拖入通常只有 Files。据此排除误触，避免拖动封面被当成导入文件。
+  return !types.some(t => t === 'text/uri-list' || t === 'text/html')
 }
 
 function markDropCopy(ev: DragEvent) {
@@ -1040,6 +1048,7 @@ function onDrop(ev: DragEvent) {
   ev.preventDefault()
   hoverNestLevel = 0
   fileHovering.value = false
+  if (!hasFilePayload(ev)) return
   const files = ev.dataTransfer?.files
   if (!files?.length) return
   const validExts = /\.(epub|txt|mobi)$/i
@@ -1075,11 +1084,22 @@ function onDocClick(e: MouseEvent) {
   }
 }
 
+// 右键落在菜单或书籍卡片之外时关闭菜单。
+// 卡片上右键由卡片自身的 handler 完成「切换到该书的菜单」，这里不再重复处理。
+function onDocContextMenu(e: MouseEvent) {
+  if (!contextMenuBook.value) return
+  const target = e.target as HTMLElement | null
+  if (target?.closest?.('.ctx-menu') || target?.closest?.('.book-card')) return
+  closeContextMenu()
+}
+
 onMounted(() => {
   document.addEventListener('click', onDocClick)
+  document.addEventListener('contextmenu', onDocContextMenu)
 })
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick)
+  document.removeEventListener('contextmenu', onDocContextMenu)
 })
 
 function randomCoverColor(): string {
@@ -1106,8 +1126,9 @@ async function resolveEpubCovers() {
       const file = new File([blob], book.filePath.split(/[\\/]/).pop() ?? 'book.epub')
       const result = await parseEpub(file)
       if (result.coverUrl) {
-        book.coverImage = result.coverUrl
-        saveCover(book.id, result.coverUrl).catch(() => { })
+        const cover = await optimizeCover(result.coverUrl)
+        book.coverImage = cover
+        saveCover(book.id, cover).catch(() => { })
       }
     } catch { }
   }
@@ -1129,8 +1150,9 @@ async function resolveMobiCovers() {
       const file = new File([blob], book.filePath.split(/[\\/]/).pop() ?? 'book.mobi')
       const result = await parseMobi(file)
       if (result.coverUrl) {
-        book.coverImage = result.coverUrl
-        saveCover(book.id, result.coverUrl).catch(() => { })
+        const cover = await optimizeCover(result.coverUrl)
+        book.coverImage = cover
+        saveCover(book.id, cover).catch(() => { })
       }
     } catch { }
   }

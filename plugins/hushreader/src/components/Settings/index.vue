@@ -593,7 +593,7 @@ function commitCapture(targetArr: string[]) {
           </div>
 
           <div class="setting-row">
-            <label>透明度</label>
+            <label>整体不透明度</label>
             <div class="input-group">
               <input type="range" min="10" max="100" v-model.number="cfg.hushreader.opacity" class="slider" />
               <span class="badge">{{ cfg.hushreader.opacity }}%</span>
@@ -601,7 +601,7 @@ function commitCapture(targetArr: string[]) {
           </div>
 
           <div class="setting-row">
-            <label>背景透明度</label>
+            <label>背景不透明度</label>
             <div class="input-group">
               <input type="range" min="0" max="100" v-model.number="cfg.hushreader.bgOpacity" class="slider" />
               <span class="badge">{{ cfg.hushreader.bgOpacity }}%</span>

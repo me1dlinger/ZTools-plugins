@@ -44,8 +44,8 @@ watch(
 </script>
 
 <template>
-  <div class="ctx-backdrop" @click.self="emit('close')" @contextmenu.prevent>
-    <ul ref="menuRef" class="ctx-menu" :style="style" @click.stop>
+  <div class="ctx-backdrop">
+    <ul ref="menuRef" class="ctx-menu" :style="style" @click.stop @contextmenu.prevent>
       <li class="ctx-item" @click="emit('book-info')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
         书籍信息
@@ -110,11 +110,15 @@ watch(
   position: fixed;
   inset: 0;
   z-index: 9000;
+  /* 遮罩只用于兜底，不拦截鼠标事件：否则盖住全屏会吞掉下方卡片的右键，
+     导致想从 A 的菜单直接右键切换到 B 时必须先点空白处关掉菜单 */
+  pointer-events: none;
 }
 
 .ctx-menu {
   position: fixed;
   z-index: 9001;
+  pointer-events: auto;
   min-width: 170px;
   margin: 0;
   padding: 6px;

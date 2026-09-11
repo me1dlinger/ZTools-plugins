@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { removeBookData, loadAllCovers } from '../utils/db'
+import { removeBookData, loadAllCovers, saveCover, saveCustomCover } from '../utils/db'
+import { optimizeCover, isCoverOversized } from '../utils/cover'
 
 export interface Bookmark {
   id: string
@@ -103,9 +104,36 @@ export const useBookStore = defineStore('books', () => {
       }
       const cur = storageGet('hushreader_current')
       if (cur) currentBookId.value = cur
+
+      await migrateOversizedCovers()
     } catch (e) {
       console.warn('Failed to load books', e)
     }
+  }
+
+  /**
+   * 一次性迁移：把落库的大幅面高清封面归一化为适合展示的缩略图。
+   * 用版本标记保证只在升级后首次启动执行一次，避免每次启动都解码大图。
+   */
+  async function migrateOversizedCovers() {
+    if (storageGet('hushreader_cover_opt_v1')) return
+    for (const book of books.value) {
+      if (isCoverOversized(book.coverImage)) {
+        const next = await optimizeCover(book.coverImage!)
+        if (next !== book.coverImage) {
+          book.coverImage = next
+          saveCover(book.id, next).catch(() => { })
+        }
+      }
+      if (isCoverOversized(book.customCoverImage)) {
+        const next = await optimizeCover(book.customCoverImage!)
+        if (next !== book.customCoverImage) {
+          book.customCoverImage = next
+          saveCustomCover(book.id, next).catch(() => { })
+        }
+      }
+    }
+    storageSet('hushreader_cover_opt_v1', '1')
   }
 
   function save() {
